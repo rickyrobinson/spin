@@ -20,7 +20,7 @@ SEPARATOR = '|'
 def usage
   <<-USAGE
 Usage: spin serve
-       spin push <file> <file>...
+       spin rspec|cucumber|test-unit <file> <file>...
 Spin preloads your Rails environment to speed up your autotest(ish) workflow.
   USAGE
 end
@@ -30,16 +30,14 @@ def socket_file
   [Dir.tmpdir, key].join('/')
 end
 
-def determine_test_framework(force_rspec, force_testunit)
-  if force_rspec
-    :rspec
-  elsif force_testunit
-    :testunit
-  elsif defined?(RSpec)
-    :rspec
-  else
-    :testunit
-  end
+def determine_test_frameworks(force_rspec, force_testunit, force_cucumber)
+  tf = []
+  tf.push :rspec if force_rspec
+  tf.push :cucumber if force_cucumber
+  tf.push :testunit if force_testunit
+  tf.push :rspec if tf.empty? && defined?(RSpec)
+  tf.push :testunit if tf.empty?
+  tf
 end
 
 def disconnect(connection)
@@ -57,7 +55,7 @@ def rails_root
 end
 
 # ## spin serve
-def serve(force_rspec, force_testunit, time, push_results)
+def serve(test_frameworks = [], time, push_results)
   root_path = rails_root and Dir.chdir(root_path)
   file = socket_file
 
@@ -69,15 +67,7 @@ def serve(force_rspec, force_testunit, time, push_results)
   # This socket is how we communicate with `spin push`.
   socket = UNIXServer.open(file)
 
-  # Trap SIGINT (Ctrl-C) so that we exit cleanly.
-  trap('SIGINT') {
-    socket.close
-    exit
-  }
-
   ENV['RAILS_ENV'] = 'test' unless ENV['RAILS_ENV']
-
-  test_framework = nil
 
   if root_path
     sec = Benchmark.realtime {
@@ -92,12 +82,10 @@ def serve(force_rspec, force_testunit, time, push_results)
       # involve it's models/controllers, etc. in its initialization, which you
       # definitely don't want to preload.
       require File.expand_path 'config/application'
+      
+      puts "Loading #{test_frameworks.join(', ')}"
 
-      # Determine the test framework to use using the passed-in 'force' options
-      # or else default to checking for defined constants.
-      test_framework = determine_test_framework(force_rspec, force_testunit)
-
-      # Preload RSpec to save some time on each test run
+      # Preload RSpec and cucumber to save some time on each test run
       begin
         require 'rspec/rails'
         require 'rspec/autorun'
@@ -109,7 +97,13 @@ def serve(force_rspec, force_testunit, time, push_results)
           end
         end
       rescue LoadError
-      end if test_framework == :rspec
+      end if test_frameworks.include? :rspec
+
+      begin
+        require 'cucumber/rspec/disable_option_parser'
+        require 'cucumber/cli/main'
+      rescue LoadError
+      end if test_frameworks.include? :cucumber
     }
     # This is the amount of time that you'll save on each subsequent test run.
     puts "Preloaded Rails env in #{sec}s..."
@@ -121,8 +115,17 @@ def serve(force_rspec, force_testunit, time, push_results)
 
   loop do
 
+    # Since `spin push` reconnects each time it has new files for us we just
+    # need to accept(2) connections from it.
+    conn = socket.accept
+    # This should be a list of relative paths to files.
+    files = conn.gets.chomp
+    files = files.split(SEPARATOR)
+    
+    test_framework = files.shift.to_sym
+    
     # If we're not going to push the results,
-    # Trap SIGQUIT (Ctrl+\) and re-run the last files that were
+    # Trap SIGQUIT (Ctrl+\\) and re-run the last files that were
     # pushed.
     if !push_results
       trap('QUIT') do
@@ -131,13 +134,6 @@ def serve(force_rspec, force_testunit, time, push_results)
         Process.wait
       end
     end
-
-    # Since `spin push` reconnects each time it has new files for us we just
-    # need to accept(2) connections from it.
-    conn = socket.accept
-    # This should be a list of relative paths to files.
-    files = conn.gets.chomp
-    files = files.split(SEPARATOR)
 
     # If spin is started with the time flag we will track total execution so
     # you can easily compare it with time rspec spec for example
@@ -185,7 +181,7 @@ def fork_and_run(files, push_results, test_framework, conn)
     end
 
     puts
-    puts "Loading #{files.inspect}"
+    puts "Running #{test_framework.to_s} #{files.inspect}"
 
     # Unfortunately rspec's interface isn't as simple as just requiring the
     # test file that you want to run (suddenly test/unit seems like the less
@@ -193,7 +189,11 @@ def fork_and_run(files, push_results, test_framework, conn)
     if test_framework == :rspec
       # We pretend the filepath came in as an argument and duplicate the
       # behaviour of the `rspec` binary.
+      
       ARGV.push files
+      puts ARGV.inspect
+    elsif test_framework == :cucumber
+      Cucumber::Cli::Main.execute(files)
     else
       # We require the full path of the file here in the child process.
       files.each { |f| require File.expand_path f }
@@ -201,18 +201,12 @@ def fork_and_run(files, push_results, test_framework, conn)
 
   end
   @last_files_ran = files
+  @last_framework = test_framework
 end
 
 # ## spin push
-def push
-  # The filenames that we will spin up to `spin serve` are passed in as
-  # arguments.
-  files_to_load = ARGV
+def push(push_framework, files_to_load)
 
-  # We reject anything in ARGV that isn't a file that exists. This takes
-  # care of scripts that specify files like `spin push -r file.rb`. The `-r`
-  # bit will just be ignored.
-  #
   # We build a string like `file1.rb|file2.rb` and pass it up to the server.
   files_to_load.map! do |file|
     args = file.split(':')
@@ -247,8 +241,10 @@ def push
 
   f = files_to_load.join(SEPARATOR)
 
-  abort if f.empty?
-  puts "Spinning up #{f}"
+  # abort if f.empty?
+  puts "Spinning up #{push_framework.to_s} #{f}"
+  
+  f = "#{push_framework.to_s}#{SEPARATOR}#{f}"
 
   # This is the other end of the socket that `spin serve` opens. At this point
   # `spin serve` will accept(2) our connection.
@@ -260,38 +256,49 @@ def push
     break if line[-1,1] == "\0"
     print line
   end
-rescue Errno::ECONNREFUSED, Errno::ENOENT
+rescue Errno::ECONNREFUSED
   abort "Connection was refused. Have you started up `spin serve` yet?"
 end
 
-force_rspec = false
-force_testunit = false
+load_rspec = false
+load_testunit = false
+load_cucumber = false
+framework_set = false
+push_framework = :rspec
+
 time = false
 push_results = false
 options = OptionParser.new do |opts|
   opts.banner = usage
   opts.separator ""
-  opts.separator "Server Options:"
+  opts.separator "Serve Options:"
 
   opts.on("-I", "--load-path=DIR#{File::PATH_SEPARATOR}DIR", "Appends directory to $LOAD_PATH") do |dirs|
     $LOAD_PATH.concat(dirs.split(File::PATH_SEPARATOR))
   end
 
-  opts.on('--rspec', 'Force the selected test framework to RSpec') do |v|
-    force_rspec = v
+  opts.on('-r', '--[no-]rspec', 'Load RSpec support') do |v|
+    load_rspec = v
   end
 
-  opts.on('--test-unit', 'Force the selected test framework to Test::Unit') do |v|
-    force_testunit = v
+  opts.on('-c', '--[no-]cucumber', 'Load Cucumber support') do |v|
+    load_cucumber = v
   end
 
-  opts.on('-t', '--time', 'See total execution time for each test run') do |v|
-    time = true
+  opts.on('-u', '--[no-]test-unit', 'Load Test::Unit support') do |v|
+    load_testunit = v
+  end
+
+  opts.on('-t', '--[no-]time', 'See total execution time for each test run') do |v|
+    time = v
   end
 
   opts.on('--push-results', 'Push test results to the push process') do |v|
     push_results = v
   end
+
+  opts.separator ""
+  opts.separator "Push Options:"
 
   opts.separator "General Options:"
   opts.on('-e', 'Stub to keep kicker happy')
@@ -304,8 +311,8 @@ options.parse!
 
 subcommand = ARGV.shift
 case subcommand
-when 'serve' then serve(force_rspec, force_testunit, time, push_results)
-when 'push' then push
+when 'serve' then serve(determine_test_frameworks(load_rspec, load_testunit, load_cucumber), time, push_results)
+when 'rspec', 'cucumber', 'test-unit' then push(subcommand.to_sym, ARGV)
 else
   $stderr.puts options
   exit 1
