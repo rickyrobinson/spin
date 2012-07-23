@@ -17,6 +17,11 @@ require 'pathname'
 
 SEPARATOR = '|'
 
+trap('INT') do
+  puts "Goodbye from Spin!"
+  exit
+end
+
 def usage
   <<-USAGE
 Usage: spin serve
@@ -83,7 +88,7 @@ def serve(test_frameworks = [], time, push_results)
       # definitely don't want to preload.
       require File.expand_path 'config/application'
       
-      puts "Loading #{test_frameworks.join(', ')}"
+      puts "Spin serve loading test frameworks: #{test_frameworks.join(' ')}"
 
       # Preload RSpec and cucumber to save some time on each test run
       begin
@@ -238,7 +243,7 @@ def push(push_framework, files_to_load)
   f = files_to_load.join(SEPARATOR)
 
   # abort if f.empty?
-  puts "Spinning up #{push_framework.to_s} #{f}"
+  puts "spin #{push_framework.to_s} #{f}"
   
   f = "#{push_framework.to_s}#{SEPARATOR}#{f}"
 
