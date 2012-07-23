@@ -20,7 +20,7 @@ SEPARATOR = '|'
 def usage
   <<-USAGE
 Usage: spin serve
-       spin rspec|cucumber|test-unit <file> <file>...
+       spin rspec|cucumber|testunit <file> <file>...
 Spin preloads your Rails environment to speed up your autotest(ish) workflow.
   USAGE
 end
@@ -88,7 +88,9 @@ def serve(test_frameworks = [], time, push_results)
       # Preload RSpec and cucumber to save some time on each test run
       begin
         require 'rspec/rails'
-        require 'rspec/autorun'
+        
+        # We need to disable autorun, otherwise RSpec tries to run again on root dir after child proc exits.
+        RSpec::Core::Runner.disable_autorun!
 
         # Tell RSpec it's running with a tty to allow colored output
         if RSpec.respond_to?(:configure)
@@ -181,17 +183,11 @@ def fork_and_run(files, push_results, test_framework, conn)
     end
 
     puts
-    puts "Running #{test_framework.to_s} #{files.inspect}"
+    puts "Running #{test_framework.to_s} #{files.join(' ')}"
 
-    # Unfortunately rspec's interface isn't as simple as just requiring the
-    # test file that you want to run (suddenly test/unit seems like the less
-    # crazy one!).
     if test_framework == :rspec
-      # We pretend the filepath came in as an argument and duplicate the
-      # behaviour of the `rspec` binary.
-      
-      ARGV.push files
-      puts ARGV.inspect
+      RSpec::Core::Runner::run(files.unshift('-c'), $stderr, $stdout)
+      # ARGV.push files
     elsif test_framework == :cucumber
       Cucumber::Cli::Main.execute(files)
     else
@@ -277,23 +273,23 @@ options = OptionParser.new do |opts|
     $LOAD_PATH.concat(dirs.split(File::PATH_SEPARATOR))
   end
 
-  opts.on('-r', '--[no-]rspec', 'Load RSpec support') do |v|
+  opts.on('-r', '--rspec', 'Load RSpec support') do |v|
     load_rspec = v
   end
 
-  opts.on('-c', '--[no-]cucumber', 'Load Cucumber support') do |v|
+  opts.on('-c', '--cucumber', 'Load Cucumber support') do |v|
     load_cucumber = v
   end
 
-  opts.on('-u', '--[no-]test-unit', 'Load Test::Unit support') do |v|
+  opts.on('-u', '--test-unit', 'Load Test::Unit support') do |v|
     load_testunit = v
   end
 
-  opts.on('-t', '--[no-]time', 'See total execution time for each test run') do |v|
+  opts.on('-t', '--time', 'See total execution time for each test run') do |v|
     time = v
   end
 
-  opts.on('--push-results', 'Push test results to the push process') do |v|
+  opts.on('-p', '--push-results', 'Push test results to the push process') do |v|
     push_results = v
   end
 
@@ -312,7 +308,7 @@ options.parse!
 subcommand = ARGV.shift
 case subcommand
 when 'serve' then serve(determine_test_frameworks(load_rspec, load_testunit, load_cucumber), time, push_results)
-when 'rspec', 'cucumber', 'test-unit' then push(subcommand.to_sym, ARGV)
+when 'rspec', 'cucumber', 'testunit' then push(subcommand.to_sym, ARGV)
 else
   $stderr.puts options
   exit 1
