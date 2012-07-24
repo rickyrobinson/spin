@@ -191,8 +191,7 @@ def fork_and_run(files, push_results, test_framework, conn)
     puts "Running #{test_framework.to_s} #{files.join(' ')}"
 
     if test_framework == :rspec
-      RSpec::Core::Runner::run(files.unshift('-c'), $stderr, $stdout)
-      # ARGV.push files
+      RSpec::Core::Runner::run(files + ['-c'], $stderr, $stdout)
     elsif test_framework == :cucumber
       Cucumber::Cli::Main.execute(files)
     else
@@ -240,18 +239,14 @@ def push(push_framework, files_to_load)
     Dir.chdir root_path
   end
 
-  f = files_to_load.join(SEPARATOR)
-
-  # abort if f.empty?
-  puts "spin #{push_framework.to_s} #{f}"
-  
-  f = "#{push_framework.to_s}#{SEPARATOR}#{f}"
+  f = [push_framework.to_s]
+  f += files_to_load
 
   # This is the other end of the socket that `spin serve` opens. At this point
   # `spin serve` will accept(2) our connection.
   socket = UNIXSocket.open(socket_file)
   # We put the filenames on the socket for the server to read and then load.
-  socket.puts f
+  socket.puts f.join(SEPARATOR)
 
   while line = socket.readpartial(100)
     break if line[-1,1] == "\0"
