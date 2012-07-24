@@ -17,6 +17,12 @@ require 'pathname'
 
 SEPARATOR = '|'
 
+DEFAULT_DIRS = {
+  :rspec => "spec",
+  :cucumber => "features",
+  :testunit => "test"
+}
+
 trap('INT') do
   puts "Goodbye from Spin!"
   exit
@@ -130,6 +136,9 @@ def serve(test_frameworks = [], time, push_results)
     files = files.split(SEPARATOR)
     
     test_framework = files.shift.to_sym
+    
+    
+    files << DEFAULT_DIRS[test_framework.to_sym] if files.empty?
     
     # If we're not going to push the results,
     # Trap SIGQUIT (Ctrl+\\) and re-run the last files that were
