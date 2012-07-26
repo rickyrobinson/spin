@@ -24,6 +24,8 @@ DEFAULT_DIRS = {
 }
 
 trap('INT') do
+  file = socket_file
+  File.delete(file) if File.exist?(file)
   puts "Goodbye from Spin!"
   exit
 end
@@ -202,7 +204,7 @@ def fork_and_run(files, push_results, test_framework, conn)
     if test_framework == :rspec
       RSpec::Core::Runner::run(files + ['-c'], $stderr, $stdout)
     elsif test_framework == :cucumber
-      Cucumber::Cli::Main.execute(files)
+      Cucumber::Cli::Main.execute(files + ['-c'])
     else
       # We require the full path of the file here in the child process.
       files.each { |f| require File.expand_path f }
