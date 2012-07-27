@@ -43,16 +43,6 @@ def socket_file
   [Dir.tmpdir, key].join('/')
 end
 
-def determine_test_frameworks(force_rspec, force_testunit, force_cucumber)
-  tf = []
-  tf.push :rspec if force_rspec
-  tf.push :cucumber if force_cucumber
-  tf.push :testunit if force_testunit
-  tf.push :rspec if tf.empty? && defined?(RSpec)
-  tf.push :testunit if tf.empty?
-  tf
-end
-
 def disconnect(connection)
   connection.print "\0"
   connection.close
@@ -68,10 +58,10 @@ def rails_root
 end
 
 # ## spin serve
-def serve(test_frameworks = [], time, push_results)
+def serve(options={})
   root_path = rails_root and Dir.chdir(root_path)
   file = socket_file
-
+  test_frameworks = []
   # We delete the tmp file for the Unix socket if it already exists. The file
   # is scoped to the `pwd`, so if it already exists then it must be from an
   # old run of `spin serve` and can be cleaned up.
@@ -95,13 +85,11 @@ def serve(test_frameworks = [], time, push_results)
       # involve it's models/controllers, etc. in its initialization, which you
       # definitely don't want to preload.
       require File.expand_path 'config/application'
-      
-      puts "Spin serve loading test frameworks: #{test_frameworks.join(' ')}"
 
       # Preload RSpec and cucumber to save some time on each test run
       begin
         require 'rspec/rails'
-        
+        test_frameworks.push(:rspec)
         # We need to disable autorun, otherwise RSpec tries to run again on root dir after child proc exits.
         RSpec::Core::Runner.disable_autorun!
 
@@ -112,13 +100,17 @@ def serve(test_frameworks = [], time, push_results)
           end
         end
       rescue LoadError
-      end if test_frameworks.include? :rspec
+      end if options[:load_rspec]
 
       begin
         require 'cucumber/rspec/disable_option_parser'
         require 'cucumber/cli/main'
+        test_frameworks.push(:cucumber)
       rescue LoadError
-      end if test_frameworks.include? :cucumber
+      end if options[:load_cucumber]
+      
+      test_frameworks.push(:testunit) if options[:load_testunit]
+      puts "Spin serve loaded test frameworks: #{test_frameworks.join(' ')}"
     }
     # This is the amount of time that you'll save on each subsequent test run.
     puts "Preloaded Rails env in #{sec}s..."
@@ -126,7 +118,7 @@ def serve(test_frameworks = [], time, push_results)
     warn "Could not find config/application.rb. Are you running this from the root of a Rails project?"
   end
 
-  puts "Pushing test results back to push processes" if push_results
+  puts "Pushing test results back to push processes" if options[:push_results]
 
   loop do
 
@@ -147,7 +139,7 @@ def serve(test_frameworks = [], time, push_results)
     # pushed.
     if !push_results
       trap('QUIT') do
-        fork_and_run(@last_files_ran, push_results, test_framework, nil)
+        fork_and_run(@last_files_ran, options[:push_results], test_framework, nil)
         # See WAIT below
         Process.wait
       end
@@ -155,13 +147,13 @@ def serve(test_frameworks = [], time, push_results)
 
     # If spin is started with the time flag we will track total execution so
     # you can easily compare it with time rspec spec for example
-    start = Time.now if time
+    start = Time.now if options[:time]
 
     # If we're not sending results back to the push process, we can disconnect
     # it immediately.
-    disconnect(conn) unless push_results
+    disconnect(conn) unless options[:push_results]
 
-    fork_and_run(files, push_results, test_framework, conn)
+    fork_and_run(files, options[:push_results], test_framework, conn)
 
     # WAIT: We don't want the parent process handling multiple test runs at the same
     # time because then we'd need to deal with multiple test databases, and
@@ -176,7 +168,7 @@ def serve(test_frameworks = [], time, push_results)
     # Tests have now run. If we were pushing results to a push process, we can
     # now disconnect it.
     begin
-      disconnect(conn) if push_results
+      disconnect(conn) if options[:push_results]
     rescue Errno::EPIPE
       # Don't abort if the client already disconnected
     end
@@ -268,15 +260,17 @@ rescue Errno::ECONNREFUSED
   abort "Connection was refused. Have you started up `spin serve` yet?"
 end
 
-load_rspec = false
-load_testunit = false
-load_cucumber = false
-framework_set = false
-push_framework = :rspec
+options = {
+  :load_rspec => true,
+  :load_testunit => true,
+  :load_cucumber => true,
+  :framework_set => false,
+  :time => false,
+  :push_results => false
+}
 
-time = false
-push_results = false
-options = OptionParser.new do |opts|
+
+parser = OptionParser.new do |opts|
   opts.banner = usage
   opts.separator ""
   opts.separator "Serve Options:"
@@ -285,28 +279,25 @@ options = OptionParser.new do |opts|
     $LOAD_PATH.concat(dirs.split(File::PATH_SEPARATOR))
   end
 
-  opts.on('-r', '--rspec', 'Load RSpec support') do |v|
-    load_rspec = v
+  opts.on('-r', '--no-rspec', 'Do not load RSpec support') do
+    options[:load_rspec] = false
   end
 
-  opts.on('-c', '--cucumber', 'Load Cucumber support') do |v|
-    load_cucumber = v
+  opts.on('-c', '--no-cucumber', 'Do not load Cucumber support') do
+    options[:load_cucumber] = false
   end
 
-  opts.on('-u', '--test-unit', 'Load Test::Unit support') do |v|
-    load_testunit = v
+  opts.on('-u', '--no-test-unit', 'Do not load Test::Unit support') do
+    options[:load_testunit] = false
   end
 
-  opts.on('-t', '--time', 'See total execution time for each test run') do |v|
-    time = v
+  opts.on('-t', '--time', 'See total execution time for each test run') do
+    options[:time] = true
   end
 
-  opts.on('-p', '--push-results', 'Push test results to the push process') do |v|
-    push_results = v
+  opts.on('-p', '--push-results', 'Push test results to the push process') do
+    options[:push_results] = true
   end
-
-  opts.separator ""
-  opts.separator "Push Options:"
 
   opts.separator "General Options:"
   opts.on('-e', 'Stub to keep kicker happy')
@@ -315,14 +306,14 @@ options = OptionParser.new do |opts|
     exit 1
   end
 end
-options.parse!
+parser.parse!
 
 subcommand = ARGV.shift
 case subcommand
-when 'serve' then serve(determine_test_frameworks(load_rspec, load_testunit, load_cucumber), time, push_results)
+when 'serve' then serve(options)
 when 'rspec', 'cucumber', 'testunit' then push(subcommand.to_sym, ARGV)
 else
-  $stderr.puts options
+  $stderr.puts parser
   exit 1
 end
 
