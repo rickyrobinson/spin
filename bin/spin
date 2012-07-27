@@ -219,7 +219,7 @@ end
 def push(push_framework, files_to_load)
 
   # We build a string like `file1.rb|file2.rb` and pass it up to the server.
-  files_to_load.map! do |file|
+  files_to_load = files_to_load.map do |file|
     args = file.split(':')
 
     file_name = args.first.to_s
@@ -243,6 +243,7 @@ def push(push_framework, files_to_load)
     end
   end.compact.uniq
 
+  puts "File to load is #{files_to_load.inspect}"
   if root_path = rails_root
     files_to_load.map! do |file|
       Pathname.new(file).expand_path.relative_path_from(root_path).to_s
