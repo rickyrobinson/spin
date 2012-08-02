@@ -137,7 +137,7 @@ def serve(options={})
     # If we're not going to push the results,
     # Trap SIGQUIT (Ctrl+\\) and re-run the last files that were
     # pushed.
-    if !push_results
+    if !options[:push_results]
       trap('QUIT') do
         fork_and_run(@last_files_ran, options[:push_results], test_framework, nil)
         # See WAIT below
@@ -268,7 +268,6 @@ options = {
   :time => false,
   :push_results => false
 }
-
 
 parser = OptionParser.new do |opts|
   opts.banner = usage
